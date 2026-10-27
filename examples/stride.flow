@@ -1,12 +1,12 @@
 diagram {
   title = "Authentication Flow (STRIDE Example)"
-  
-  description = `This diagram illustrates a user login process to highlight 
+
+  description = `This diagram illustrates a user login process to highlight
                  the new integrated STRIDE Threat Modeling annotations.`
-                 
+
   threats = [
-    "[D] [Low] [3.0] Public endpoint discovery via automated scanning",
-    "[S] [Medium] Application layer DoS on the login route"
+    "[I] [Low] [3.0] Public endpoint discovery via automated scanning",
+    "[D] [Medium] Application layer DoS on the login route"
   ]
 
   boundary client_network {
@@ -44,7 +44,7 @@ diagram {
     operation = "Return 200 OK"
     data = ["Set-Cookie: session_id"]
     threats = [
-      "[S] [Medium] [6.1] Cookie missing HttpOnly and Secure flags, susceptible to XSS extraction."
+      "[I] [Medium] [6.1] Cookie missing HttpOnly and Secure flags, susceptible to XSS extraction."
     ]
   }
 }

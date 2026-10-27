@@ -10,3 +10,4 @@
 coverage/
 *.lcov
 .DS_Store
+tmp

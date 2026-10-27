@@ -1,6 +1,6 @@
 # Mobile Payment Flow
 
-Architecture for processing customer orders and handling 
+Architecture for processing customer orders and handling
 payments securely through a third-party gateway.
 
 ## Global Threats
@@ -38,7 +38,7 @@ External API call to clear the funds.
 - **Data Exchanged:** TransactionID, Status
 
 ### 6. Payment Microservice -> Orders Database: Update Order
-- **Data Exchanged:** OrderID, Status<sub>payment</sub>
+- **Data Exchanged:** OrderID, Status&lt;sub&gt;payment&lt;/sub&gt;
 - **Identified Threats:**
   - SQL Injection during record update
 
