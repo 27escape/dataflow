@@ -1,0 +1,38 @@
+/*
+ * legend.flow
+ *
+ * This is nice.
+ */
+diagram {
+  title = "Legend"
+
+  boundary my_boundary {
+    title = "A boundary"
+
+    function f {
+      title = "function"
+    }
+    database d {
+      title = "database"
+    }
+    io i {
+      title = "io"
+    }
+  }
+
+  f -> d {
+    operation = "Operation 1"
+    data = ["Data"]
+  }
+  i -> f {
+    operation = "Operation 2"
+    data = ["Data"]
+  }
+  f -> i {
+    operation = "Operation 3"
+    data = [
+      "Some data",
+      "Other data"
+    ]
+  }
+}

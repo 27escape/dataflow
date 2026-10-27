@@ -1,0 +1,67 @@
+diagram {
+  title = "Mobile Payment Flow"
+  
+  description = `Architecture for processing customer orders and handling 
+                 payments securely through a third-party gateway.`
+                 
+  threats = [
+    "Distributed Denial of Service (DDoS) against the public API",
+    "Credential stuffing on customer accounts"
+  ]
+
+  boundary customer_device {
+    title = "Customer Device"
+    io user { title = "Customer" }
+    function mobile_app { title = "Mobile App" }
+  }
+
+  boundary cloud_backend {
+    title = "Cloud Infrastructure"
+    function api_gateway { title = "API Gateway" }
+    function payment_service { title = "Payment Microservice" }
+    database order_db { title = "Orders Database" }
+  }
+
+  io payment_provider { title = "External Payment Gateway" }
+
+  user -> mobile_app {
+    operation = "Tap 'Checkout'"
+    description = `User initiates the checkout process from their cart.`
+  }
+
+  mobile_app -> api_gateway {
+    operation = "Submit Payment"
+    data = ["AuthToken", "OrderTotal", "CardDetails"]
+    description = `Encrypted payload sent over TLS.`
+    threats = ["Man-in-the-Middle (MITM) if TLS is bypassed or downgraded"]
+  }
+
+  api_gateway -> payment_service {
+    operation = "Route Request"
+    data = ["CardDetails"]
+  }
+
+  payment_service -> payment_provider {
+    operation = "Process Charge"
+    data = ["Amount", "CardDetails"]
+    description = `External API call to clear the funds.`
+    threats = ["Third-party API outage", "API key leakage"]
+  }
+
+  payment_provider -> payment_service {
+    operation = "Charge Result"
+    data = ["TransactionID", "Status"]
+  }
+
+  payment_service -> order_db {
+    operation = "Update Order"
+    data = ["OrderID", "Status<sub>payment</sub>"]
+    description = `Mark the order as paid in the database.`
+    threats = ["SQL Injection during record update"]
+  }
+
+  payment_service -> mobile_app {
+    operation = "Return Receipt"
+    data = ["Receipt HTML"]
+  }
+}
