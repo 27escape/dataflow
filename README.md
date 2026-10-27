@@ -18,7 +18,7 @@ plantuml -version
 dot -version
 ```
 
-*(Note: If you are running tools in a containerized environment like OrbStack, ensure your wrapper scripts for `plantuml` and `dot` are executable and accessible in `/usr/local/bin/`)* or `$HOME/bin`.
+*(Note: If you are running tools in a containerized environment like OrbStack or Docker, ensure your wrapper scripts for `plantuml` and `dot` are executable and accessible in `/usr/local/bin/`)* or `$HOME/bin`.
 
 Make the script executable:
 
@@ -115,7 +115,7 @@ my_api -> user_db {
 
 ### Example
 
-See `examples/webapp.flow`. A minimal complete example:
+See `examples/simple.flow`. A minimal complete example, this is another example
 
 ```text
 diagram {
