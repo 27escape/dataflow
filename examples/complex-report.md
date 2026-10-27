@@ -16,7 +16,8 @@ User initiates the checkout process from their cart.
 
 ### 2. Mobile App -> API Gateway: Submit Payment
 - **Data Exchanged:** AuthToken, OrderTotal, CardDetails
-- **Identified Threats:** Man-in-the-Middle (MITM) if TLS is bypassed or downgraded
+- **Identified Threats:**
+  - Man-in-the-Middle (MITM) if TLS is bypassed or downgraded
 
 **Description:**
 Encrypted payload sent over TLS.
@@ -26,7 +27,9 @@ Encrypted payload sent over TLS.
 
 ### 4. Payment Microservice -> External Payment Gateway: Process Charge
 - **Data Exchanged:** Amount, CardDetails
-- **Identified Threats:** Third-party API outage, API key leakage
+- **Identified Threats:**
+  - Third-party API outage
+  - API key leakage
 
 **Description:**
 External API call to clear the funds.
@@ -36,7 +39,8 @@ External API call to clear the funds.
 
 ### 6. Payment Microservice -> Orders Database: Update Order
 - **Data Exchanged:** OrderID, Status<sub>payment</sub>
-- **Identified Threats:** SQL Injection during record update
+- **Identified Threats:**
+  - SQL Injection during record update
 
 **Description:**
 Mark the order as paid in the database.

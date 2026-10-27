@@ -1,0 +1,50 @@
+diagram {
+  title = "Authentication Flow (STRIDE Example)"
+  
+  description = `This diagram illustrates a user login process to highlight 
+                 the new integrated STRIDE Threat Modeling annotations.`
+                 
+  threats = [
+    "[D] [Low] [3.0] Public endpoint discovery via automated scanning",
+    "[S] [Medium] Application layer DoS on the login route"
+  ]
+
+  boundary client_network {
+    title = "Client Network"
+    io browser { title = "Web Browser" }
+  }
+
+  boundary corporate_dmz {
+    title = "Corporate DMZ"
+    function auth_gateway { title = "Auth Gateway" }
+    database session_store { title = "Redis Session Store" }
+  }
+
+  browser -> auth_gateway {
+    operation = "POST /login"
+    data = ["Username", "Password"]
+    description = `User submits credentials over TLS.`
+    threats = [
+      "[S, I] [Critical] [9.2] Credential stuffing attack on the public facing login portal.",
+      "[T, I] [High] [7.5] TLS Downgrade attack leading to MITM password interception."
+    ]
+  }
+
+  auth_gateway -> session_store {
+    operation = "Create Session"
+    data = ["SessionID", "JWT Token"]
+    description = `Store the active session mapping.`
+    threats = [
+      "[E, D] [High] [8.1] Redis instance exposed without password authentication.",
+      "[I] [Medium] [5.4] Weak entropy used for SessionID generation."
+    ]
+  }
+
+  auth_gateway -> browser {
+    operation = "Return 200 OK"
+    data = ["Set-Cookie: session_id"]
+    threats = [
+      "[S] [Medium] [6.1] Cookie missing HttpOnly and Secure flags, susceptible to XSS extraction."
+    ]
+  }
+}

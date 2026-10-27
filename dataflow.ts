@@ -227,6 +227,45 @@ class Parser {
   }
 }
 
+// STRIDE Threat Modeling Support
+type ParsedThreat = {
+  isStride: boolean;
+  cats?: string;
+  risk?: string;
+  score?: string;
+  desc?: string;
+  raw: string;
+  from?: string;
+  to?: string;
+};
+
+function parseThreat(t: string, from?: string, to?: string): ParsedThreat {
+  // Matches: [S, T] [High] [8.5] Description  OR  [S, T] [High] Description
+  const m = t.match(/^\[(.*?)\]\s+\[(.*?)\](?:\s+\[(.*?)\])?\s+(.*)$/);
+  if (m) {
+    return { isStride: true, cats: m[1], risk: m[2], score: m[3] || "N/A", desc: m[4], raw: t, from, to };
+  }
+  return { isStride: false, raw: t, from, to };
+}
+
+const getRiskColorGV = (risk: string) => {
+  const r = risk.toLowerCase();
+  if (r === 'critical') return '#982C35';
+  if (r === 'high') return '#CD3B48';
+  if (r === 'medium') return '#D97706';
+  if (r === 'low') return '#059669';
+  return '#444444';
+};
+
+const getRiskColorPUML = (risk: string) => {
+  const r = risk.toLowerCase();
+  if (r === 'critical') return '#FFB3B3';
+  if (r === 'high') return '#FFCCCC';
+  if (r === 'medium') return '#FFE6CC';
+  if (r === 'low') return '#E6FFCC';
+  return '#EEEEEE';
+};
+
 const str = (v: Value | undefined): string =>
   v === undefined ? "" : typeof v === "string" ? v : JSON.stringify(v);
 const label = (a: Attrs, fallback: string) => str(a.title) || fallback;
@@ -256,20 +295,38 @@ function generateReport(d: Diagram): string {
   if (desc) lines.push(`${desc}\n`);
 
   const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
+  const allThreats: ParsedThreat[] = [];
   
-  const threats = getList(d.attrs.threats).map(String);
-  if (threats.length > 0) {
+  getList(d.attrs.threats).map(String).forEach(t => allThreats.push(parseThreat(t, "Global", "Architecture")));
+  d.flows.forEach(f => {
+    const fromName = label(d.nodes.find(n => n.id === f.from)?.attrs || {}, f.from);
+    const toName = label(d.nodes.find(n => n.id === f.to)?.attrs || {}, f.to);
+    getList(f.attrs.threats).map(String).forEach(t => allThreats.push(parseThreat(t, fromName, toName)));
+  });
+
+  const strideThreats = allThreats.filter(t => t.isStride);
+  if (strideThreats.length > 0) {
+    strideThreats.sort((a, b) => (parseFloat(b.score!) || 0) - (parseFloat(a.score!) || 0));
+    lines.push(`## STRIDE Threat Matrix\n`);
+    lines.push(`| ID | Categories | Risk | Score | Location | Description |`);
+    lines.push(`|---|---|---|---|---|---|`);
+    strideThreats.forEach((t, i) => {
+      lines.push(`| T-${i + 1} | **${t.cats}** | ${t.risk} | ${t.score} | ${t.from} &rarr; ${t.to} | ${t.desc} |`);
+    });
+    lines.push("");
+  }
+
+  const globalNonStride = getList(d.attrs.threats).map(String).map(t => parseThreat(t)).filter(t => !t.isStride);
+  if (globalNonStride.length > 0) {
     lines.push(`## Global Threats`);
-    threats.forEach(t => lines.push(`- **${t}**`));
+    globalNonStride.forEach(t => lines.push(`- **${t.raw}**`));
     lines.push("");
   }
 
   lines.push(`## Data Flows\n`);
   d.flows.forEach((f, index) => {
-    const fromNode = d.nodes.find(n => n.id === f.from);
-    const toNode = d.nodes.find(n => n.id === f.to);
-    const fromName = label(fromNode?.attrs || {}, f.from);
-    const toName = label(toNode?.attrs || {}, f.to);
+    const fromName = label(d.nodes.find(n => n.id === f.from)?.attrs || {}, f.from);
+    const toName = label(d.nodes.find(n => n.id === f.to)?.attrs || {}, f.to);
     const op = str(f.attrs.operation) || "Flow";
     
     lines.push(`### ${index + 1}. ${fromName} -> ${toName}: ${op}`);
@@ -279,17 +336,21 @@ function generateReport(d: Diagram): string {
       lines.push(`- **Data Exchanged:** ${data.join(", ")}`);
     }
     
-    const fThreats = getList(f.attrs.threats).map(String);
+    const fThreats = getList(f.attrs.threats).map(String).map(t => parseThreat(t));
     if (fThreats.length > 0) {
-      lines.push(`- **Identified Threats:** ${fThreats.join(", ")}`);
+      lines.push(`- **Identified Threats:**`);
+      fThreats.forEach(t => {
+        if (t.isStride) {
+          lines.push(`  - <span style="color:${getRiskColorGV(t.risk!)}; font-weight:bold;">[${t.risk}]</span> **[${t.cats}]** (Score: ${t.score}) - ${t.desc}`);
+        } else {
+          lines.push(`  - ${t.raw}`);
+        }
+      });
     }
     
     const fDesc = str(f.attrs.description);
-    if (fDesc) {
-      lines.push(`\n**Description:**\n${fDesc}\n`);
-    } else {
-      lines.push("");
-    }
+    if (fDesc) lines.push(`\n**Description:**\n${fDesc}\n`);
+    else lines.push("");
   });
 
   return lines.join("\n");
@@ -298,10 +359,13 @@ function generateReport(d: Diagram): string {
 function render(d: Diagram, dataflow: boolean): string {
   const lines: string[] = [];
   const title = str(d.attrs.title);
-  const diagramExtra = extras(d.attrs, ["title"]);
+  const diagramExtra = extras(d.attrs, ["title", "threats"]);
+  const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
   
   if (dataflow) {
+    // ----------------------------------------------------
     // Graphviz DFD Rendering
+    // ----------------------------------------------------
     let dfdFlowIndex = 1;
     lines.push('digraph G {');
     lines.push('  rankdir=TB;');
@@ -345,22 +409,31 @@ function render(d: Diagram, dataflow: boolean): string {
     const seenAsSource = new Set<string>();
 
     for (const f of d.flows) {
-      const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
       const opList = getList(f.attrs.operation).map(String);
       const dataList = getList(f.attrs.data).map(String);
+      const fThreats = getList(f.attrs.threats).map(String).map(t => parseThreat(t));
+      
+      const strideTags = fThreats.filter(t => t.isStride).map(t => 
+        `<font face="Helvetica" color="${getRiskColorGV(t.risk!)}"><b>[${t.cats}]</b></font>`
+      );
 
       let htmlLabel = "";
-      if (opList.length > 0 || dataList.length > 0) {
-        const prefix = `<font color="#3182ce">(${dfdFlowIndex})</font> `;
+      if (opList.length > 0 || dataList.length > 0 || strideTags.length > 0) {
+        const prefix = (opList.length > 0 || dataList.length > 0) ? `<font color="#3182ce">(${dfdFlowIndex})</font> ` : "";
         if (opList.length > 0) {
           opList[0] = prefix + gv(opList[0]);
-        } else {
+        } else if (dataList.length > 0) {
           dataList[0] = prefix + gv(dataList[0]);
         }
-        dfdFlowIndex++;
+        if (opList.length > 0 || dataList.length > 0) dfdFlowIndex++;
         
         const combined = [...opList.map(o => o.includes("<font") ? o : gv(o)), ...dataList.map(gv)];
-        htmlLabel = `<<table border="0" cellborder="0" cellpadding="2"><tr><td><font face="Helvetica">${combined.join('</font></td></tr><tr><td><font face="Helvetica">')}</font></td></tr></table>>`;
+        
+        let tableRows = combined.map(c => `<tr><td><font face="Helvetica">${c}</font></td></tr>`).join('');
+        if (strideTags.length > 0) {
+          tableRows += `<tr><td>${strideTags.join(" ")}</td></tr>`;
+        }
+        htmlLabel = `<<table border="0" cellborder="0" cellpadding="2">${tableRows}</table>>`;
       }
       
       const fromRank = getRank(getKind(f.from));
@@ -375,7 +448,9 @@ function render(d: Diagram, dataflow: boolean): string {
     lines.push('}');
     return lines.join('\n') + '\n';
   } else {
+    // ----------------------------------------------------
     // PlantUML Sequence Rendering
+    // ----------------------------------------------------
     lines.push("@startuml");
     lines.push("skinparam shadowing false");
     lines.push("skinparam defaultFontName sans-serif");
@@ -395,7 +470,6 @@ function render(d: Diagram, dataflow: boolean): string {
     }
 
     const formatFlowText = (opV: Value | undefined, dataV: Value | undefined): string => {
-      const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
       let opList = getList(opV).map(String);
       let dataList = getList(dataV).map(String);
 
@@ -429,13 +503,20 @@ function render(d: Diagram, dataflow: boolean): string {
       let text = formatFlowText(f.attrs.operation, f.attrs.data);
       if (!text) text = pu("Flow");
       
-      const desc = str(f.attrs.description),
-        x = extras(f.attrs, ["operation", "data", "description"]);
-        
       lines.push(`  ${f.from} -> ${f.to}: ${text}`);
       
+      const desc = str(f.attrs.description),
+            x = extras(f.attrs, ["operation", "data", "description", "threats"]);
+            
       if (desc || x.length) {
-        lines.push(`note over ${f.from},${f.to}: ${pu([desc, ...x].filter(Boolean).join(" | "))}`);
+        lines.push(`  note over ${f.from},${f.to}: ${pu([desc, ...x].filter(Boolean).join(" | "))}`);
+      }
+
+      const strideThreats = getList(f.attrs.threats).map(String).map(t => parseThreat(t)).filter(t => t.isStride);
+      if (strideThreats.length > 0) {
+        const color = getRiskColorPUML(strideThreats[0].risk!);
+        const threatLines = strideThreats.map(t => `**[${pu(t.cats!)}] ${pu(t.risk!)} (${pu(t.score!)})**\\n${pu(t.desc!)}`).join('\\n---\\n');
+        lines.push(`  note over ${f.from},${f.to} ${color}: ${threatLines}`);
       }
     }
 
