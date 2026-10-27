@@ -1,6 +1,6 @@
 ### Example
 
-See `examples/simple.flow` and `examples/complex.flow`. A minimal example:
+See `examples/simple.flow`, `examples/complex.flow` and `examples/stride.flow` (STRIDE threat annotations). A minimal example:
 
 ```text
 diagram {
@@ -24,3 +24,4 @@ diagram {
     data = ["Email address", "Timestamp"]
   }
 }
+```

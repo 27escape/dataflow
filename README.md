@@ -18,7 +18,7 @@ plantuml -version
 dot -version
 ```
 
-*(Note: If you are running tools in a containerized environment like OrbStack, ensure your wrapper scripts for `plantuml` and `dot` are executable and accessible in `/usr/local/bin/`)* or `$HOME/bin`.
+*(Note: If you are running tools in a containerized environment like OrbStack or Docker, ensure your wrapper scripts for `plantuml` and `dot` are executable and accessible in `/usr/local/bin/`)* or `$HOME/bin`.
 
 Make the script executable:
 
@@ -58,7 +58,7 @@ DataFlow is a declarative Domain-Specific Language (DSL) originally designed for
 *   **Strings:** Use double quotes (`"..."`) for single lines.
 *   **Multiline Text:** Use backticks (`` `...` ``) for paragraphs.
 *   **Arrays:** Use brackets (`["A", "B"]`) for lists of items (like data payloads or threats).
-*   **Comments:** C-style multiline comments (`/* ... */`) are ignored by the parser.
+*   **Comments:** C-style multiline comments (`/* ... */`) are ignored by the parser. This converter also accepts `// ...` line comments (a convenience extension; other tools that read `.flow` files may not).
 
 ### Core Components
 
@@ -115,7 +115,7 @@ my_api -> user_db {
 
 ### Example
 
-See `examples/webapp.flow`. A minimal complete example:
+See `examples/simple.flow` (minimal), `examples/complex.flow` and `examples/stride.flow` (STRIDE threat annotations). Another minimal complete example:
 
 ```text
 diagram {
@@ -143,6 +143,60 @@ diagram {
 }
 ```
 
+## Threat modelling with STRIDE
+
+`threats` entries (on the `diagram` or on any flow) can be plain strings, or STRIDE-annotated strings in this format:
+
+```text
+"[CATEGORIES] [Risk] [Score] Description"
+```
+
+```text
+threats = [
+  "[S, I] [Critical] [9.2] Credential stuffing against the login portal.",
+  "[D] [Medium] Application layer DoS on the login route"
+]
+```
+
+*   **Categories** - one or more STRIDE letters, comma separated (case-insensitive):
+
+    | Letter | Threat | Violates |
+    | --- | --- | --- |
+    | `S` | Spoofing | Authenticity |
+    | `T` | Tampering | Integrity |
+    | `R` | Repudiation | Non-repudiation |
+    | `I` | Information disclosure | Confidentiality |
+    | `D` | Denial of service | Availability |
+    | `E` | Elevation of privilege | Authorisation |
+
+*   **Risk** - `Critical`, `High`, `Medium` or `Low` (case-insensitive). Any other value is accepted but shown in neutral grey and reported as a warning.
+*   **Score** - optional number such as `8.5` (for example a CVSS or DREAD-style score). It is only treated as a score when it is numeric; if omitted it shows as `N/A`.
+*   **Description** - free text. It may span several lines when written as a backtick string.
+
+A threat that does not match this shape is kept as plain text. A plain-text threat that *starts* with `[` triggers a warning, because it usually means a typo in a STRIDE annotation.
+
+### Where STRIDE threats appear
+
+| Output | What you get |
+| --- | --- |
+| Markdown report (`--report`) | A **STRIDE Threat Matrix** table (ID, categories, risk, score, location, description) sorted by score, highest first (ties broken by risk), followed by each flow's threats. Plain-text diagram-level threats are listed under **Global Threats**. |
+| Data-flow diagram (`-d`) | The STRIDE category tags (for example **[S, I]**) under the flow's label, coloured by risk. Descriptions and scores are not drawn; see the report for those. |
+| Sequence diagram (default) | A note on the flow listing each threat's categories, risk, score and description. The note is coloured by the **most severe** threat on that flow. |
+
+| Risk | Report | Diagram colour | Sequence note |
+| --- | --- | --- | --- |
+| Critical | 🔴 | `#982C35` | `#FFB3B3` |
+| High | 🟠 | `#CD3B48` | `#FFCCCC` |
+| Medium | 🟡 | `#D97706` | `#FFE6CC` |
+| Low | 🟢 | `#059669` | `#E6FFCC` |
+| Other | ⚪ | `#444444` | `#EEEEEE` |
+
+### Warnings
+
+Malformed threats do not stop the conversion. Instead the converter prints warnings to stderr, for example an unknown STRIDE letter, an unknown risk level, or a threat that looks like STRIDE but cannot be parsed. Diagram-level STRIDE threats have no flow, so their location is shown as *Global → Architecture* in the matrix.
+
+See `examples/stride.flow` and the generated `examples/stride-report.md`.
+
 ## Attribute mapping
 
 | Source element | Sequence output (PlantUML) | Data-flow output (Graphviz) | Markdown Report |
@@ -155,10 +209,10 @@ diagram {
 | `flow.operation` | Bold message text | Auto-numbered edge label | Data flow header |
 | `flow.data` | Italicized gray text below message | Appended to edge label | Bulleted list item |
 | `flow.description` | Inline note over endpoints | Ignored visually | Rendered Markdown block |
-| `flow.threats` | Ignored visually | Ignored visually | Bulleted list of threats |
-| `diagram.threats` | Ignored visually | Ignored visually | Global threats list |
+| `flow.threats` | Note on the flow (STRIDE-formatted threats only) | Category tags under the label (STRIDE-formatted threats only) | Matrix row (STRIDE) and bulleted list |
+| `diagram.threats` | Ignored visually | Ignored visually | Matrix row (STRIDE) or Global Threats list (plain text) |
 
-Attributes not directly representable in a target visual format are retained as human-readable annotations in the Markdown report, not as native renderer semantics. Nested array values are represented as JSON strings. `description` is not rendered visually in data-flow mode: it is intended for the Markdown report. Comments from the original `.flow` file are not preserved.
+Attributes not directly representable in a target visual format are retained as human-readable annotations in the Markdown report, not as native renderer semantics. Nested array values are represented as JSON strings. `description` is not rendered visually in data-flow mode: it is intended for the Markdown report. In the report, angle brackets in titles, operations, data and threat text are escaped so they appear literally, while `description` is passed through as Markdown. Comments from the original `.flow` file are not preserved.
 
 ## Visual styling & Layout behavior
 
@@ -170,11 +224,12 @@ Attributes not directly representable in a target visual format are retained as 
 
 *   Strings follow the upstream language's no-escape rule; no backslash escaping is supported in quoted source strings.
 *   Target diagram syntax has restrictions on punctuation in labels; this converter normalizes several problematic characters (e.g., escaping `<` and `>` where HTML is not supported). Check generated diagrams for unusually complex labels.
+*   Node and boundary IDs are quoted in the Graphviz output and prefixed in the PlantUML output, so IDs such as `node`, `edge` or `end` are safe.
 *   The program needs write access to the destination directory and temporary directory. Renderer failures are reported on stderr with a nonzero exit code.
 
 ## Troubleshooting
 
-If `plantuml` or `dot` is missing, install it with Homebrew (or verify your Docker wrappers) and check `PATH`. If an image fails to render, first generate `.puml` or `.dot` text and inspect the result.
+If `plantuml` or `dot` is missing, install it with Homebrew (or verify your Docker wrappers) and check `PATH`. If an image fails to render, first generate `.puml` or `.dot` text and inspect the result. Warnings about threats are printed on stderr and never change the exit code.
 
 ## References
 

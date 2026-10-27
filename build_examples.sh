@@ -1,10 +1,12 @@
 #!/bin/bash
+set -euo pipefail
+shopt -s nullglob
 
-for i in examples/*flow
+for i in examples/*.flow
 do
   echo "$i"
   b=$(basename "$i" .flow)
-  ./dataflow.ts "$i" -o examples/${b}-dfd.png -d 
-  ./dataflow.ts "$i" -o examples/${b}-seq.png
-  ./dataflow.ts "$i" -o examples/${b}-report.md --report
+  ./dataflow.ts "$i" -o "examples/${b}-dfd.png" -d
+  ./dataflow.ts "$i" -o "examples/${b}-seq.png"
+  ./dataflow.ts "$i" -o "examples/${b}-report.md" --report
 done

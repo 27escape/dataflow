@@ -12,7 +12,7 @@ type Node = {
 };
 
 type Boundary = { id: string; attrs: Attrs };
-type Flow = { from: string; to: string; attrs: Attrs };
+type Flow = { from: string; to: string; attrs: Attrs; line: number };
 
 type Diagram = {
   attrs: Attrs;
@@ -23,11 +23,11 @@ type Diagram = {
 
 type Token = { kind: string; value: string; line: number };
 
-function lex(source: string): Token[] {
+export function lex(source: string): Token[] {
   const out: Token[] = [];
   let i = 0, line = 1;
   const add = (kind: string, value: string, l = line) =>
-    out.push({ kind, value, line });
+    out.push({ kind, value, line: l });
 
   while (i < source.length) {
     const c = source[i];
@@ -42,6 +42,13 @@ function lex(source: string): Token[] {
       const s = source.slice(i, end + 2);
       line += (s.match(/\n/g) || []).length;
       i = end + 2;
+      continue;
+    }
+    // Line comment (extension to the upstream language); stops before the
+    // newline so the whitespace branch above still counts the line.
+    if (source.startsWith("//", i)) {
+      const end = source.indexOf("\n", i);
+      i = end < 0 ? source.length : end;
       continue;
     }
     if (source.startsWith("->", i) || source.startsWith("<-", i)) {
@@ -60,7 +67,7 @@ function lex(source: string): Token[] {
       if (j === source.length) throw Error(`Unclosed string at line ${start}`);
       let v = source.slice(i + 1, j);
       if (quote === "`") {
-        v = v.split("\n").map((x) => x.trimStart()).join("\n").trim();
+        v = v.split("\n").map((x) => x.trim()).join("\n").trim();
       }
       add("string", v, start);
       i = j + 1;
@@ -83,7 +90,7 @@ function lex(source: string): Token[] {
   return out;
 }
 
-class Parser {
+export class Parser {
   private i = 0;
   private ids = new Set<string>();
   private diagram: Diagram = {
@@ -198,6 +205,7 @@ class Parser {
         continue;
       }
 
+      const line = t.line;
       const left = this.take("id");
       const arrow = this.take("arrow");
       const right = this.take("id");
@@ -210,21 +218,132 @@ class Parser {
         from: arrow === "->" ? left : right,
         to: arrow === "->" ? right : left,
         attrs,
+        line,
       });
     }
     this.take("eof");
 
+    const nodeIds = new Set(this.diagram.nodes.map((n) => n.id));
     for (const f of this.diagram.flows) {
-      if (!this.diagram.nodes.some((n) => n.id === f.from)) {
-        throw Error(`Unknown flow source: ${f.from}`);
+      if (!nodeIds.has(f.from)) {
+        throw Error(`Line ${f.line}: unknown flow source: ${f.from}`);
       }
-      if (!this.diagram.nodes.some((n) => n.id === f.to)) {
-        throw Error(`Unknown flow target: ${f.to}`);
+      if (!nodeIds.has(f.to)) {
+        throw Error(`Line ${f.line}: unknown flow target: ${f.to}`);
       }
     }
 
     return this.diagram;
   }
+}
+
+// ---------------------------------------------------------------------------
+// STRIDE Threat Modeling Support
+//
+// Threat string format:  "[S, T] [High] [8.5] Description"
+//                        "[S, T] [High] Description"        (score optional)
+// Anything else is kept as a plain-text threat.
+// ---------------------------------------------------------------------------
+export type ParsedThreat = {
+  isStride: boolean;
+  cats?: string;
+  invalid?: string[];
+  risk?: string;
+  score?: string;
+  desc?: string;
+  raw: string;
+  from?: string;
+  to?: string;
+};
+
+const STRIDE_LETTERS = new Set(["S", "T", "R", "I", "D", "E"]);
+const KNOWN_RISKS = ["critical", "high", "medium", "low"];
+
+// [\s\S] (not .) so descriptions written as multi-line backtick strings match.
+// The score is only recognised when numeric, so "[Fix] ..." stays description.
+const THREAT_RE =
+  /^\[([^\]]*)\]\s*\[([^\]]*)\](?:\s*\[(\d+(?:\.\d+)?)\])?\s*([\s\S]+)$/;
+
+export function parseThreat(t: string, from?: string, to?: string): ParsedThreat {
+  const m = t.trim().match(THREAT_RE);
+  if (m) {
+    const letters = m[1].split(",").map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    return {
+      isStride: true,
+      cats: letters.join(", "),
+      invalid: letters.filter((l) => !STRIDE_LETTERS.has(l)),
+      risk: m[2].trim(),
+      score: m[3] || "N/A",
+      desc: m[4].replace(/\s*\n\s*/g, " ").trim(),
+      raw: t,
+      from,
+      to,
+    };
+  }
+  return { isStride: false, raw: t, from, to };
+}
+
+const riskRank = (risk: string) => {
+  const i = KNOWN_RISKS.indexOf(risk.toLowerCase());
+  return i < 0 ? 0 : KNOWN_RISKS.length - i; // critical=4 ... low=1, other=0
+};
+
+const riskEmoji = (risk: string) =>
+  ["\u26AA", "\uD83D\uDFE2", "\uD83D\uDFE1", "\uD83D\uDFE0", "\uD83D\uDD34"][
+    riskRank(risk)
+  ]; // white, green, yellow, orange, red
+
+const getRiskColorGV = (risk: string) => {
+  const r = risk.toLowerCase();
+  if (r === "critical") return "#982C35";
+  if (r === "high") return "#CD3B48";
+  if (r === "medium") return "#D97706";
+  if (r === "low") return "#059669";
+  return "#444444";
+};
+
+const getRiskColorPUML = (risk: string) => {
+  const r = risk.toLowerCase();
+  if (r === "critical") return "#FFB3B3";
+  if (r === "high") return "#FFCCCC";
+  if (r === "medium") return "#FFE6CC";
+  if (r === "low") return "#E6FFCC";
+  return "#EEEEEE";
+};
+
+const getList = (v: Value | undefined): Value[] =>
+  v === undefined ? [] : Array.isArray(v) ? v : [v];
+
+/** Returns human-readable warnings about malformed or unrecognised threats. */
+export function validateThreats(d: Diagram): string[] {
+  const warnings: string[] = [];
+  const check = (v: Value | undefined, where: string) => {
+    for (const raw of getList(v).map(String)) {
+      const t = parseThreat(raw);
+      const snippet = raw.replace(/\s+/g, " ").slice(0, 60);
+      if (t.isStride) {
+        if (!t.cats) warnings.push(`${where}: no STRIDE category in "${snippet}"`);
+        for (const l of t.invalid ?? []) {
+          warnings.push(
+            `${where}: unknown STRIDE category "${l}" (expected S, T, R, I, D or E) in "${snippet}"`,
+          );
+        }
+        if (!KNOWN_RISKS.includes(t.risk!.toLowerCase())) {
+          warnings.push(
+            `${where}: unknown risk "${t.risk}" (expected Critical, High, Medium or Low) in "${snippet}"`,
+          );
+        }
+      } else if (raw.trimStart().startsWith("[")) {
+        warnings.push(
+          `${where}: threat starts with "[" but is not in "[CATS] [Risk] [Score] description" format; treated as plain text: "${snippet}"`,
+        );
+      }
+    }
+  };
+  check(d.attrs.threats, "diagram");
+  for (const f of d.flows) check(f.attrs.threats, `flow ${f.from} -> ${f.to}`);
+  return warnings;
 }
 
 const str = (v: Value | undefined): string =>
@@ -240,95 +359,147 @@ const pu = (s: string) =>
   clean(s).replace(/\\/g, "\\\\").replace(/"/g, "'").replace(/\[/g, "(")
     .replace(/\]/g, ")");
 
-const gv = (s: string) => 
+const gv = (s: string) =>
   clean(s).replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/&lt;(\/?(?:sub|sup|b|i))&gt;/gi, "<$1>");
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/&lt;(\/?(?:sub|sup|b|i))&gt;/gi, "<$1>");
 
-function generateReport(d: Diagram): string {
+// Markdown report helpers: escape angle brackets so stray HTML in titles,
+// operations or threat text can't inject markup; escape pipes inside table cells.
+const mdText = (s: string) => s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const mdCell = (s: string) => mdText(clean(s)).replace(/\|/g, "\\|");
+
+export function generateReport(d: Diagram): string {
   const lines: string[] = [];
   const title = str(d.attrs.title) || "System Threat Model";
-  lines.push(`# ${title}\n`);
+  lines.push(`# ${mdText(title)}\n`);
 
   const desc = str(d.attrs.description);
   if (desc) lines.push(`${desc}\n`);
 
-  const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
-  
-  const threats = getList(d.attrs.threats).map(String);
-  if (threats.length > 0) {
+  const nameOf = (id: string) =>
+    label(d.nodes.find((n) => n.id === id)?.attrs || {}, id);
+
+  const allThreats: ParsedThreat[] = [];
+  getList(d.attrs.threats).map(String).forEach((t) =>
+    allThreats.push(parseThreat(t, "Global", "Architecture"))
+  );
+  d.flows.forEach((f) => {
+    const fromName = nameOf(f.from), toName = nameOf(f.to);
+    getList(f.attrs.threats).map(String).forEach((t) =>
+      allThreats.push(parseThreat(t, fromName, toName))
+    );
+  });
+
+  const strideThreats = allThreats.filter((t) => t.isStride);
+  if (strideThreats.length > 0) {
+    strideThreats.sort((a, b) =>
+      (parseFloat(b.score!) || 0) - (parseFloat(a.score!) || 0) ||
+      riskRank(b.risk!) - riskRank(a.risk!)
+    );
+    lines.push(`## STRIDE Threat Matrix\n`);
+    lines.push(`| ID | Categories | Risk | Score | Location | Description |`);
+    lines.push(`|---|---|---|---|---|---|`);
+    strideThreats.forEach((t, i) => {
+      lines.push(
+        `| T-${i + 1} | **${t.cats}** | ${riskEmoji(t.risk!)} ${mdCell(t.risk!)} | ${t.score} | ${mdCell(t.from!)} &rarr; ${mdCell(t.to!)} | ${mdCell(t.desc!)} |`,
+      );
+    });
+    lines.push("");
+  }
+
+  const globalNonStride = getList(d.attrs.threats).map(String)
+    .map((t) => parseThreat(t)).filter((t) => !t.isStride);
+  if (globalNonStride.length > 0) {
     lines.push(`## Global Threats`);
-    threats.forEach(t => lines.push(`- **${t}**`));
+    globalNonStride.forEach((t) => lines.push(`- **${mdText(t.raw)}**`));
     lines.push("");
   }
 
   lines.push(`## Data Flows\n`);
   d.flows.forEach((f, index) => {
-    const fromNode = d.nodes.find(n => n.id === f.from);
-    const toNode = d.nodes.find(n => n.id === f.to);
-    const fromName = label(fromNode?.attrs || {}, f.from);
-    const toName = label(toNode?.attrs || {}, f.to);
+    const fromName = nameOf(f.from), toName = nameOf(f.to);
     const op = str(f.attrs.operation) || "Flow";
-    
-    lines.push(`### ${index + 1}. ${fromName} -> ${toName}: ${op}`);
-    
+
+    lines.push(
+      `### ${index + 1}. ${mdText(fromName)} -> ${mdText(toName)}: ${mdText(op)}`,
+    );
+
     const data = getList(f.attrs.data).map(String);
     if (data.length > 0) {
-      lines.push(`- **Data Exchanged:** ${data.join(", ")}`);
+      lines.push(`- **Data Exchanged:** ${mdText(data.join(", "))}`);
     }
-    
-    const fThreats = getList(f.attrs.threats).map(String);
+
+    const fThreats = getList(f.attrs.threats).map(String).map((t) =>
+      parseThreat(t)
+    );
     if (fThreats.length > 0) {
-      lines.push(`- **Identified Threats:** ${fThreats.join(", ")}`);
+      lines.push(`- **Identified Threats:**`);
+      fThreats.forEach((t) => {
+        if (t.isStride) {
+          lines.push(
+            `  - ${riskEmoji(t.risk!)} **[${mdText(t.risk!)}]** **[${t.cats}]** (Score: ${t.score}) - ${mdText(t.desc!)}`,
+          );
+        } else {
+          lines.push(`  - ${mdText(t.raw)}`);
+        }
+      });
     }
-    
+
     const fDesc = str(f.attrs.description);
-    if (fDesc) {
-      lines.push(`\n**Description:**\n${fDesc}\n`);
-    } else {
-      lines.push("");
-    }
+    if (fDesc) lines.push(`\n**Description:**\n${fDesc}\n`);
+    else lines.push("");
   });
 
   return lines.join("\n");
 }
 
-function render(d: Diagram, dataflow: boolean): string {
+export function render(d: Diagram, dataflow: boolean): string {
   const lines: string[] = [];
   const title = str(d.attrs.title);
-  const diagramExtra = extras(d.attrs, ["title"]);
-  
+  const diagramExtra = extras(d.attrs, ["title", "threats"]);
+
   if (dataflow) {
+    // ----------------------------------------------------
     // Graphviz DFD Rendering
+    // ----------------------------------------------------
     let dfdFlowIndex = 1;
-    lines.push('digraph G {');
-    lines.push('  rankdir=TB;');
-    
+    lines.push("digraph G {");
+    lines.push("  rankdir=TB;");
+
     lines.push('  graph [fontname="Helvetica"];');
     lines.push('  node [fontname="Helvetica", shape="box", style="solid"];');
     lines.push('  edge [fontname="Helvetica", fontsize=11];');
-    
+
     if (title) {
       lines.push(`  labelloc="t";`);
       lines.push(`  label="${gv(title)}";`);
       lines.push(`  fontsize=18;`);
     }
 
+    // IDs are quoted so that ones like "node", "edge" or "graph" (Graphviz
+    // keywords) are still valid.
     const node = (n: Node) => {
       const name = label(n.attrs, n.id);
       if (n.kind === "database") {
-        lines.push(`  ${n.id} [shape=none, margin=0, label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="6"><tr><td sides="TB" bgcolor="#CD3B48" color="#982C35"><font face="Helvetica" color="white">${gv(name)}</font></td></tr></table>>];`);
+        lines.push(
+          `  "${n.id}" [shape=none, margin=0, label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="6"><tr><td sides="TB" bgcolor="#CD3B48" color="#982C35"><font face="Helvetica" color="white">${gv(name)}</font></td></tr></table>>];`,
+        );
       } else if (n.kind === "io") {
-        lines.push(`  ${n.id} [label="${gv(name)}", shape="box", style="filled,solid", fillcolor="#989898", color="#CD3B48", fontcolor="white"];`);
+        lines.push(
+          `  "${n.id}" [label="${gv(name)}", shape="box", style="filled,solid", fillcolor="#989898", color="#CD3B48", fontcolor="white"];`,
+        );
       } else {
-        lines.push(`  ${n.id} [label="${gv(name)}", shape="circle", style="filled,solid", fillcolor="#E2EAF9", color="#A9B8D6"];`);
+        lines.push(
+          `  "${n.id}" [label="${gv(name)}", shape="circle", style="filled,solid", fillcolor="#E2EAF9", color="#A9B8D6"];`,
+        );
       }
     };
 
     for (const b of d.boundaries) {
-      lines.push(`  subgraph cluster_${b.id} {`);
+      lines.push(`  subgraph "cluster_${b.id}" {`);
       lines.push(`    label="${gv(label(b.attrs, b.id))}";`);
       lines.push(`    style="dashed,filled";`);
       lines.push(`    fillcolor="#F9F9F9";`);
@@ -337,45 +508,65 @@ function render(d: Diagram, dataflow: boolean): string {
       for (const n of d.nodes.filter((n) => n.boundary === b.id)) node(n);
       lines.push(`  }`);
     }
-    
+
     for (const n of d.nodes.filter((n) => !n.boundary)) node(n);
 
-    const getKind = (id: string) => d.nodes.find((n) => n.id === id)?.kind || "function";
-    const getRank = (kind: string) => kind === "io" ? 1 : kind === "function" ? 2 : 3;
+    const getKind = (id: string) =>
+      d.nodes.find((n) => n.id === id)?.kind || "function";
+    const getRank = (kind: string) =>
+      kind === "io" ? 1 : kind === "function" ? 2 : 3;
     const seenAsSource = new Set<string>();
 
     for (const f of d.flows) {
-      const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
       const opList = getList(f.attrs.operation).map(String);
       const dataList = getList(f.attrs.data).map(String);
+      const fThreats = getList(f.attrs.threats).map(String).map((t) =>
+        parseThreat(t)
+      );
+
+      const strideTags = fThreats.filter((t) => t.isStride).map((t) =>
+        `<font face="Helvetica" color="${getRiskColorGV(t.risk!)}"><b>[${gv(t.cats!)}]</b></font>`
+      );
 
       let htmlLabel = "";
-      if (opList.length > 0 || dataList.length > 0) {
-        const prefix = `<font color="#3182ce">(${dfdFlowIndex})</font> `;
-        if (opList.length > 0) {
-          opList[0] = prefix + gv(opList[0]);
-        } else {
-          dataList[0] = prefix + gv(dataList[0]);
+      // Escape every row first, then add the numbering prefix to the first
+      // one, so the prefix markup is never escaped itself.
+      const rows = [...opList, ...dataList].map(gv);
+      if (rows.length > 0 || strideTags.length > 0) {
+        if (rows.length > 0) {
+          rows[0] = `<font color="#3182ce">(${dfdFlowIndex})</font> ${rows[0]}`;
+          dfdFlowIndex++;
         }
-        dfdFlowIndex++;
-        
-        const combined = [...opList.map(o => o.includes("<font") ? o : gv(o)), ...dataList.map(gv)];
-        htmlLabel = `<<table border="0" cellborder="0" cellpadding="2"><tr><td><font face="Helvetica">${combined.join('</font></td></tr><tr><td><font face="Helvetica">')}</font></td></tr></table>>`;
+
+        let tableRows = rows.map((c) =>
+          `<tr><td><font face="Helvetica">${c}</font></td></tr>`
+        ).join("");
+        if (strideTags.length > 0) {
+          tableRows += `<tr><td>${strideTags.join(" ")}</td></tr>`;
+        }
+        htmlLabel =
+          `<<table border="0" cellborder="0" cellpadding="2">${tableRows}</table>>`;
       }
-      
+
       const fromRank = getRank(getKind(f.from));
       const toRank = getRank(getKind(f.to));
-      
-      const constraint = (fromRank > toRank || seenAsSource.has(f.to)) ? ", constraint=false" : "";
+
+      const constraint = (fromRank > toRank || seenAsSource.has(f.to))
+        ? ", constraint=false"
+        : "";
       seenAsSource.add(f.from);
-      
-      lines.push(`  ${f.from} -> ${f.to} [label=${htmlLabel || '""'}${constraint}];`);
+
+      lines.push(
+        `  "${f.from}" -> "${f.to}" [label=${htmlLabel || '""'}${constraint}];`,
+      );
     }
 
-    lines.push('}');
-    return lines.join('\n') + '\n';
+    lines.push("}");
+    return lines.join("\n") + "\n";
   } else {
+    // ----------------------------------------------------
     // PlantUML Sequence Rendering
+    // ----------------------------------------------------
     lines.push("@startuml");
     lines.push("skinparam shadowing false");
     lines.push("skinparam defaultFontName sans-serif");
@@ -394,53 +585,85 @@ function render(d: Diagram, dataflow: boolean): string {
       lines.push(`title ${pu(title)}`);
     }
 
-    const formatFlowText = (opV: Value | undefined, dataV: Value | undefined): string => {
-      const getList = (v: Value | undefined) => v === undefined ? [] : Array.isArray(v) ? v : [v];
+    const formatFlowText = (
+      opV: Value | undefined,
+      dataV: Value | undefined,
+    ): string => {
       let opList = getList(opV).map(String);
       let dataList = getList(dataV).map(String);
 
-      opList = opList.map(o => `**<color:#444444>${pu(o)}</color>**`);
-      dataList = dataList.map(d => `//<color:#666666>${pu(d)}</color>//`);
+      opList = opList.map((o) => `**<color:#444444>${pu(o)}</color>**`);
+      dataList = dataList.map((d) => `//<color:#666666>${pu(d)}</color>//`);
       return [...opList, ...dataList].filter(Boolean).join("\\n");
     };
 
+    // Aliases are prefixed so IDs that collide with PlantUML keywords
+    // (e.g. "end", "note", "title") are still valid.
+    const alias = (id: string) => `n_${id}`;
+
     const defineSeqNode = (n: Node) => {
       const name = label(n.attrs, n.id);
-      const kind = n.kind === "database" ? "database" : n.kind === "io" ? "entity" : "participant";
-      lines.push(`  ${kind} "**${pu(name)}**" as ${n.id}`);
+      const kind = n.kind === "database"
+        ? "database"
+        : n.kind === "io"
+        ? "entity"
+        : "participant";
+      lines.push(`  ${kind} "**${pu(name)}**" as ${alias(n.id)}`);
     };
 
     for (const b of d.boundaries) {
-      lines.push(`  box "<color:#666666><i>${pu(label(b.attrs, b.id))}</i></color>" #F9F9F9`);
-      for (const n of d.nodes.filter((n) => n.boundary === b.id)) defineSeqNode(n);
+      lines.push(
+        `  box "<color:#666666><i>${pu(label(b.attrs, b.id))}</i></color>" #F9F9F9`,
+      );
+      for (const n of d.nodes.filter((n) => n.boundary === b.id)) {
+        defineSeqNode(n);
+      }
       lines.push(`  end box`);
     }
-    
+
     for (const n of d.nodes.filter((n) => !n.boundary)) defineSeqNode(n);
 
     for (const n of d.nodes) {
       const x = extras(n.attrs, ["title"]);
       if (x.length) {
-        lines.push(`  note over ${n.id}: ${pu(x.join(" | "))}`);
+        lines.push(`  note over ${alias(n.id)}: ${pu(x.join(" | "))}`);
       }
     }
 
     for (const f of d.flows) {
       let text = formatFlowText(f.attrs.operation, f.attrs.data);
       if (!text) text = pu("Flow");
-      
+
+      const a = alias(f.from), b = alias(f.to);
+      lines.push(`  ${a} -> ${b}: ${text}`);
+
       const desc = str(f.attrs.description),
-        x = extras(f.attrs, ["operation", "data", "description"]);
-        
-      lines.push(`  ${f.from} -> ${f.to}: ${text}`);
-      
+        x = extras(f.attrs, ["operation", "data", "description", "threats"]);
+
       if (desc || x.length) {
-        lines.push(`note over ${f.from},${f.to}: ${pu([desc, ...x].filter(Boolean).join(" | "))}`);
+        lines.push(
+          `  note over ${a},${b}: ${pu([desc, ...x].filter(Boolean).join(" | "))}`,
+        );
+      }
+
+      const strideThreats = getList(f.attrs.threats).map(String).map((t) =>
+        parseThreat(t)
+      ).filter((t) => t.isStride);
+      if (strideThreats.length > 0) {
+        // Colour the note by the most severe threat, not the first listed.
+        const worst = strideThreats.reduce((w, t) =>
+          riskRank(t.risk!) > riskRank(w.risk!) ? t : w
+        );
+        const color = getRiskColorPUML(worst.risk!);
+        const threatLines = strideThreats.map((t) =>
+          `**[${pu(t.cats!)}] ${pu(t.risk!)} (${pu(t.score!)})**\\n${pu(t.desc!)}`
+        ).join("\\n---\\n");
+        lines.push(`  note over ${a},${b} ${color}: ${threatLines}`);
       }
     }
 
     if (diagramExtra.length) {
-      lines.push(`' Diagram attributes: ${diagramExtra.map(([k, v]) => `${k}: ${clean(str(v))}`).join(" | ")}`);
+      lines.push(`' Diagram attributes: ${diagramExtra.map(clean).join(" | ")}`);
     }
 
     lines.push("@enduml");
@@ -483,17 +706,19 @@ async function main() {
 
   const source = await Deno.readTextFile(input);
   const d = new Parser(lex(source)).parse();
-  
+
+  for (const w of validateThreats(d)) console.error(`dataflow: warning: ${w}`);
+
   if (report) {
     const mdText = generateReport(d);
     await Deno.writeTextFile(output, mdText);
     console.log(`Wrote ${output}`);
     return;
   }
-  
+
   const text = render(d, dataflow);
   const ext = output.toLowerCase().match(/\.(png|svg)$/)?.[1];
-  
+
   if (!ext) {
     await Deno.writeTextFile(output, text);
     console.log(`Wrote ${output}`);
@@ -504,10 +729,12 @@ async function main() {
   try {
     const path = `${tmp}/diagram.${dataflow ? "dot" : "puml"}`;
     await Deno.writeTextFile(path, text);
-    
+
     const cmd = dataflow ? "dot" : "plantuml";
-    const cmdArgs = dataflow ? [`-T${ext}`, path, "-o", output] : [`-t${ext}`, path];
-    
+    const cmdArgs = dataflow
+      ? [`-T${ext}`, path, "-o", output]
+      : [`-t${ext}`, path];
+
     let result;
     try {
       result = await new Deno.Command(cmd, {
