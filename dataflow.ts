@@ -294,6 +294,42 @@ const riskEmoji = (risk: string) =>
     riskRank(risk)
   ]; // white, green, yellow, orange, red
 
+const STRIDE_LEGEND: Array<[string, string]> = [
+  ["S", "Spoofing: pretending to be another user, system, or service."],
+  ["T", "Tampering: modifying data or code in transit or at rest."],
+  ["R", "Repudiation: denying that an action occurred without proof."],
+  ["I", "Information disclosure: exposing data to those without permission."],
+  ["D", "Denial of service: disrupting or degrading service availability."],
+  ["E", "Elevation of privilege: gaining access beyond what was intended."],
+];
+
+const strideLegendMarkdown = () =>
+  [
+    "## STRIDE Overview",
+    "",
+    "STRIDE is a threat-modeling mnemonic for common security risks. Each letter highlights a different category of attack or weakness.",
+    "",
+    "| Letter | Meaning | Description |",
+    "|---|---|---|",
+    ...STRIDE_LEGEND.map(([letter, desc]) =>
+      `| ${letter} | ${desc.split(":")[0].trim()} | ${desc.replace(/^[^:]+:\s*/, "")} |`
+    ),
+    "",
+  ].join("\n");
+
+const strideLegendHtml = () =>
+  [
+    '<table border="1" cellborder="1" cellspacing="0" cellpadding="4">',
+    '<tr><td><b>Letter</b></td><td><b>Meaning</b></td><td><b>Description</b></td></tr>',
+    ...STRIDE_LEGEND.map(([letter, desc]) => {
+      const idx = desc.indexOf(":");
+      const meaning = idx >= 0 ? desc.slice(0, idx) : desc;
+      const detail = idx >= 0 ? desc.slice(idx + 1).trim() : "";
+      return `<tr><td>${letter}</td><td>${meaning}</td><td>${gv(detail)}</td></tr>`;
+    }),
+    "</table>",
+  ].join("");
+
 const getRiskColorGV = (risk: string) => {
   const r = risk.toLowerCase();
   if (r === "critical") return "#982C35";
@@ -371,7 +407,7 @@ const gv = (s: string) =>
 const mdText = (s: string) => s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const mdCell = (s: string) => mdText(clean(s)).replace(/\|/g, "\\|");
 
-export function generateReport(d: Diagram): string {
+export function generateReport(d: Diagram, explain = false): string {
   const lines: string[] = [];
   const title = str(d.attrs.title) || "System Threat Model";
   lines.push(`# ${mdText(title)}\n`);
@@ -453,10 +489,12 @@ export function generateReport(d: Diagram): string {
     else lines.push("");
   });
 
+  if (explain) lines.push(`\n${strideLegendMarkdown()}\n`);
+
   return lines.join("\n");
 }
 
-export function render(d: Diagram, dataflow: boolean): string {
+export function render(d: Diagram, dataflow: boolean, explain = false): string {
   const lines: string[] = [];
   const title = str(d.attrs.title);
   const diagramExtra = extras(d.attrs, ["title", "threats"]);
@@ -477,6 +515,16 @@ export function render(d: Diagram, dataflow: boolean): string {
       lines.push(`  labelloc="t";`);
       lines.push(`  label="${gv(title)}";`);
       lines.push(`  fontsize=18;`);
+    }
+
+    if (explain) {
+      const legendRows = STRIDE_LEGEND.map(([letter, desc]) => {
+        const idx = desc.indexOf(":");
+        const meaning = idx >= 0 ? desc.slice(0, idx) : desc;
+        const detail = idx >= 0 ? desc.slice(idx + 1).trim() : "";
+        return `<TR><TD><B>${letter}</B></TD><TD>${gv(meaning)}</TD><TD>${gv(detail)}</TD></TR>`;
+      }).join("");
+      lines.push(`  graph [fontname="Helvetica", fontsize=9, labelloc="b", labeljust="r", label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4" BGCOLOR="#FFFFFF"><TR><TD COLSPAN="3" BGCOLOR="#F3F4F6"><FONT POINT-SIZE="12"><B>STRIDE</B></FONT></TD></TR>${legendRows}</TABLE>>];`);
     }
 
     // IDs are quoted so that ones like "node", "edge" or "graph" (Graphviz
@@ -662,6 +710,16 @@ export function render(d: Diagram, dataflow: boolean): string {
       }
     }
 
+    if (explain) {
+      lines.push("legend right");
+      STRIDE_LEGEND.forEach(([letter, desc]) => {
+        const idx = desc.indexOf(":");
+        const meaning = idx >= 0 ? desc.slice(0, idx) : desc;
+        lines.push(`${letter} = ${meaning} - ${idx >= 0 ? desc.slice(idx + 1).trim() : ""}`);
+      });
+      lines.push("endlegend");
+    }
+
     if (diagramExtra.length) {
       lines.push(`' Diagram attributes: ${diagramExtra.map(clean).join(" | ")}`);
     }
@@ -671,13 +729,32 @@ export function render(d: Diagram, dataflow: boolean): string {
   }
 }
 
+export function shouldSkipOutput(
+  input: string,
+  output: string,
+  force = false,
+): boolean {
+  if (force) return false;
+
+  try {
+    const src = Deno.statSync(input);
+    const dst = Deno.statSync(output);
+    if (src.mtime && dst.mtime) {
+      return dst.mtime.getTime() > src.mtime.getTime();
+    }
+  } catch {
+    // Ignore missing files or unreadable metadata; the generator will run.
+  }
+  return false;
+}
+
 function usage() {
-  return `Usage: dataflow.ts SOURCE.flow --output FILE [OPTIONS]\n\nOptions:\n  -o, --output FILE  Required output file (.png/.svg for images; .md for reports)\n  -d, --dataflow     Data-flow diagram (Graphviz) instead of default sequence diagram (PlantUML)\n  -r, --report       Generate a Markdown threat model report instead of an image\n  -h, --help         Show this help\n`;
+  return `Usage: dataflow.ts SOURCE.flow --output FILE [OPTIONS]\n\nOptions:\n  -o, --output FILE  Required output file (.png/.svg for images; .md for reports)\n  -d, --dataflow     Data-flow diagram (Graphviz) instead of default sequence diagram (PlantUML)\n  -r, --report       Generate a Markdown threat model report instead of an image\n  -e, --explain      Add a STRIDE explanation/legend to the output\n  -f, --force        Regenerate output even when it is newer than the source\n  -h, --help         Show this help\n`;
 }
 
 async function main() {
   const args = Deno.args;
-  let input = "", output = "", dataflow = false, report = false;
+  let input = "", output = "", dataflow = false, report = false, force = false, explain = false;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -693,6 +770,14 @@ async function main() {
       report = true;
       continue;
     }
+    if (a === "-e" || a === "--explain") {
+      explain = true;
+      continue;
+    }
+    if (a === "-f" || a === "--force") {
+      force = true;
+      continue;
+    }
     if (a === "-o" || a === "--output") {
       output = args[++i] ?? "";
       continue;
@@ -704,19 +789,24 @@ async function main() {
 
   if (!input || !output) throw Error(usage());
 
+  if (shouldSkipOutput(input, output, force)) {
+    console.log(`Skipping ${output}: output is newer than ${input}. Use --force to regenerate.`);
+    return;
+  }
+
   const source = await Deno.readTextFile(input);
   const d = new Parser(lex(source)).parse();
 
   for (const w of validateThreats(d)) console.error(`dataflow: warning: ${w}`);
 
   if (report) {
-    const mdText = generateReport(d);
+    const mdText = generateReport(d, explain);
     await Deno.writeTextFile(output, mdText);
     console.log(`Wrote ${output}`);
     return;
   }
 
-  const text = render(d, dataflow);
+  const text = render(d, dataflow, explain);
   const ext = output.toLowerCase().match(/\.(png|svg)$/)?.[1];
 
   if (!ext) {

@@ -5,6 +5,7 @@ import {
   Parser,
   parseThreat,
   render,
+  shouldSkipOutput,
   validateThreats,
 } from "./dataflow.ts";
 
@@ -113,4 +114,43 @@ Deno.test("sequence: aliases are prefixed and note uses the worst risk colour", 
 Deno.test("sequence: diagram attribute comment shows key and value", () => {
   const puml = render(parse(BASIC.replace('title = "T"', 'title = "T" owner = "me"')), false);
   ok(puml.includes("' Diagram attributes: owner: me"), puml);
+});
+
+Deno.test("output freshness: skip generation if output is newer than source unless forced", async () => {
+  const dir = await Deno.makeTempDir();
+  const source = `${dir}/source.flow`;
+  const output = `${dir}/diagram.svg`;
+
+  await Deno.writeTextFile(source, "diagram { io a { } function b { } a -> b { } }");
+  await Deno.writeTextFile(output, "<svg />");
+
+  const srcTime = new Date("2020-01-01T00:00:00Z");
+  const outTime = new Date("2030-01-01T00:00:00Z");
+  Deno.utimeSync(source, srcTime, srcTime);
+  Deno.utimeSync(output, outTime, outTime);
+
+  eq(shouldSkipOutput(source, output, false), true, "older source should be skipped");
+  eq(shouldSkipOutput(source, output, true), false, "force should bypass skip");
+});
+
+Deno.test("explain: report and diagrams include a STRIDE legend when enabled", () => {
+  const d = parse(`diagram {
+    io user { title = "User" }
+    function api { title = "API" }
+    user -> api { operation = "Login" threats = ["[S, T] [High] [8] Cross-check"] }
+  }`);
+
+  const md = generateReport(d, true);
+  ok(md.includes("## STRIDE Overview"), "report is missing the STRIDE overview");
+  ok(md.includes("Spoofing"), "report overview does not explain spoofing");
+
+  const seq = render(d, false, true);
+  ok(seq.includes("legend right"), "sequence diagram is missing the legend");
+  ok(seq.includes("S = Spoofing"), "sequence legend misses the spoofing entry");
+
+  const dot = render(d, true, true);
+  ok(dot.includes("STRIDE"), "graphviz legend title missing");
+  ok(dot.includes("Spoofing"), "graphviz legend missing STRIDE meaning");
+  ok(dot.includes("labeljust=\"r\""), "graphviz legend is not aligned to the right of the graph");
+  ok(dot.includes("fontsize=9"), "graphviz legend font is not smaller");
 });
