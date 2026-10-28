@@ -40,7 +40,17 @@ Text output requires only Deno; image output additionally requires the relevant 
 | `-o`, `--output FILE` | Required destination filename |
 | `-d`, `--dataflow` | Data-flow/flowchart layout via Graphviz (default: PlantUML sequence) |
 | `-r`, `--report` | Generate a Markdown threat model report instead of an image |
+| `-e`, `--explain` | Add a STRIDE overview/legend explaining the threat categories |
+| `-f`, `--force` | Regenerate the destination even if it is newer than the source file |
 | `-h`, `--help` | Show help |
+
+Examples:
+
+```sh
+./dataflow.ts examples/simple.flow --output examples/simple-report.md --report --explain
+./dataflow.ts examples/simple.flow --output examples/simple-dfd.svg --dataflow --explain
+./dataflow.ts examples/simple.flow --output examples/simple-seq.png --explain
+```
 
 Output extensions `.png` and `.svg` (case-insensitive) trigger image rendering. All other extensions (`.puml`, `.dot`, `.txt`, etc.) produce plain text in the selected diagram language. The extension of a text file does not choose the diagram language.
 
